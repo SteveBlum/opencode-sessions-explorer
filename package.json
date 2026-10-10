@@ -73,5 +73,8 @@
     "@opencode-ai/plugin": "1.18.16",
     "@types/bun": "latest",
     "typescript": "^6.0.3"
+  },
+  "allowScripts": {
+    "msgpackr-extract": true
   }
 }

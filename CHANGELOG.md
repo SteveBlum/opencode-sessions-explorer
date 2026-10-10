@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `list-sessions`, `list-tool-failures`, `search-sessions-meta`, `search-tool-calls`,
+  `session-timeline`, and `cost-by-project` now fall back to their documented default
+  `limit`/`top`/`max_summary_chars` values with `?? <default>` before binding them as
+  SQL parameters. OpenCode does not apply Zod `.default()` values when invoking tools
+  without those arguments, so `args.limit`/`args.top`/`args.max_summary_chars` could
+  arrive as `undefined` and cause a "datatype mismatch" SQLite error.
+
 ### Removed
 - Removed the `lex` mode from `search-text` and `grep-session`.
 - Removed `sem` and `hybrid` search modes. `search-text` and `grep-session` are now

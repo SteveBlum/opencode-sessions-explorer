@@ -33,7 +33,7 @@ export const listSessions = tool({
   },
   async execute(args) {
     return runWithEnvelope("list_sessions", 96, async (ctx) => {
-      const limit = args.limit
+      const limit = args.limit ?? 20
       const cursor = decodeCursor(args.cursor)
       const where: string[] = []
       const params: any[] = []

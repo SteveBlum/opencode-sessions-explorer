@@ -61,7 +61,7 @@ export const listToolFailures = tool({
         }
         return {
           group_by: args.group_by,
-          failures: table(Array.from(groups.values()).sort((a, b) => b.count - a.count).slice(0, args.limit)),
+          failures: table(Array.from(groups.values()).sort((a, b) => b.count - a.count).slice(0, args.limit ?? 20)),
           total_groups: groups.size,
         }
       }
@@ -92,7 +92,7 @@ export const listToolFailures = tool({
         ORDER BY count DESC
            LIMIT ?`
       }
-      params.push(args.limit)
+      params.push(args.limit ?? 20)
       const rows = stmt(sql).all(...params) as any[]
       return {
         group_by: args.group_by,

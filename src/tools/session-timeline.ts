@@ -59,10 +59,10 @@ export const sessionTimeline = tool({
          WHERE ${where.join(" AND ")}
       ORDER BY p.time_created ASC, p.id ASC
          LIMIT ?`
-      params.push(args.limit + 1)
+      params.push((args.limit ?? 100) + 1)
       const rows = stmt(sql).all(...params) as { part_id: string; message_id: string; time_created: number; data: string; data_bytes: number }[]
       let hasMore = false
-      if (rows.length > args.limit) { rows.pop(); hasMore = true }
+      if (rows.length > (args.limit ?? 100)) { rows.pop(); hasMore = true }
       if (hasMore && rows.length > 0) {
         const last = rows[rows.length - 1]!
         ctx.nextCursor = encodeCursor({ ts: last.time_created, id: last.part_id })
@@ -78,7 +78,7 @@ export const sessionTimeline = tool({
           summary: summarize(d, args.max_summary_chars),
         }
       })
-      const events = args.granularity === "turns" ? collapseTurns(rawEvents, args.max_summary_chars) : rawEvents
+      const events = args.granularity === "turns" ? collapseTurns(rawEvents, args.max_summary_chars ?? 200) : rawEvents
       return {
         session_id: args.session_id,
         archived: session.time_archived != null,

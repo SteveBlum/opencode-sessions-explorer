@@ -66,7 +66,7 @@ export const costByProject = tool({
           LIMIT ?`
       if (args.min_cost > 0) params.push(args.min_cost)
       if (args.min_tokens > 0) params.push(args.min_tokens)
-      params.push(args.top)
+      params.push(args.top ?? 20)
       const rows = stmt(sql).all(...params) as any[]
 
       const records = rows.map((r) => ({

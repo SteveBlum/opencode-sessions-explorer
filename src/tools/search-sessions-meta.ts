@@ -61,10 +61,10 @@ export const searchSessionsMeta = tool({
           ${whereSql}
       ORDER BY s.time_updated DESC, s.id DESC
          LIMIT ?`
-      params.push(args.limit + 1)
+      params.push((args.limit ?? 20) + 1)
       const rows = stmt(sql).all(...params) as any[]
       let hasMore = false
-      if (rows.length > args.limit) { rows.pop(); hasMore = true }
+      if (rows.length > (args.limit ?? 20)) { rows.pop(); hasMore = true }
       if (hasMore && rows.length > 0) {
         const last = rows[rows.length - 1]
         ctx.nextCursor = encodeCursor({ ts: last.time_updated, id: last.id })
