@@ -38,10 +38,10 @@ beforeAll(() => {
   try {
     snap.exec("PRAGMA busy_timeout=5000")
     const arch = snap
-      .query("SELECT id, time_archived FROM session WHERE time_archived IS NOT NULL ORDER BY time_archived DESC LIMIT 1")
+      .query("SELECT id, time_archived FROM session_v2 WHERE time_archived IS NOT NULL ORDER BY time_archived DESC LIMIT 1")
       .get() as { id: string; time_archived: number } | null
     const act = snap
-      .query("SELECT id FROM session WHERE time_archived IS NULL ORDER BY time_updated DESC LIMIT 1")
+      .query("SELECT id FROM session_v2 WHERE time_archived IS NULL ORDER BY time_updated DESC LIMIT 1")
       .get() as { id: string } | null
     if (!arch) throw new Error("no archived session in snapshot — cannot test unarchive")
     if (!act) throw new Error("no active session in snapshot")
@@ -75,7 +75,7 @@ function readArchived(dbPath: string, id: string): number | null {
   const d = new Database(dbPath, { readonly: true })
   try {
     d.exec("PRAGMA busy_timeout=5000")
-    const r = d.query("SELECT time_archived FROM session WHERE id = ?").get(id) as { time_archived: number | null } | null
+    const r = d.query("SELECT time_archived FROM session_v2 WHERE id = ?").get(id) as { time_archived: number | null } | null
     return r ? (r.time_archived ?? null) : null
   } finally {
     d.close()
@@ -96,7 +96,7 @@ describe("unarchive_session", () => {
     const w = new Database(copyPath, { readwrite: true, create: false })
     try {
       w.exec("PRAGMA busy_timeout=5000")
-      w.query("UPDATE session SET time_archived = NULL, time_updated = ? WHERE id = ?").run(OLD, activeId)
+      w.query("UPDATE session_v2 SET time_archived = NULL, time_updated = ? WHERE id = ?").run(OLD, activeId)
     } finally {
       w.close()
     }
@@ -148,10 +148,10 @@ describe("unarchive_session", () => {
     try {
       w.exec("PRAGMA busy_timeout=5000")
       const row = w
-        .query("SELECT id FROM session WHERE time_archived IS NULL ORDER BY time_updated DESC LIMIT 1")
+        .query("SELECT id FROM session_v2 WHERE time_archived IS NULL ORDER BY time_updated DESC LIMIT 1")
         .get() as { id: string }
       target = row.id
-      w.query("UPDATE session SET time_archived = ?, time_updated = ? WHERE id = ?").run(Date.now(), OLD, target)
+      w.query("UPDATE session_v2 SET time_archived = ?, time_updated = ? WHERE id = ?").run(Date.now(), OLD, target)
     } finally {
       w.close()
     }
@@ -167,7 +167,7 @@ describe("unarchive_session", () => {
     const updatedAfter = (() => {
       const d = new Database(copyPath, { readonly: true })
       try {
-        return (d.query("SELECT time_updated FROM session WHERE id = ?").get(target) as { time_updated: number }).time_updated
+        return (d.query("SELECT time_updated FROM session_v2 WHERE id = ?").get(target) as { time_updated: number }).time_updated
       } finally {
         d.close()
       }

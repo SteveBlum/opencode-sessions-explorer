@@ -10,6 +10,7 @@ import { runWithEnvelope } from "../lib/envelope.js"
 import { truncateString } from "../lib/truncate.js"
 import { normalizeError } from "../lib/channel.js"
 import { table } from "../lib/table.js"
+import { PART_CTE } from "../lib/parts.js"
 
 export const listToolFailures = tool({
   description:
@@ -30,23 +31,24 @@ export const listToolFailures = tool({
   },
   async execute(args) {
     return runWithEnvelope("list_tool_failures", 48, async () => {
-      const where: string[] = ["json_extract(p.data,'$.type') = 'tool'", "json_extract(p.data,'$.state.status') = 'error'"]
+      const where: string[] = ["p.type = 'tool'", "p.status = 'error'"]
       const params: any[] = []
       if (args.tool) {
-        if (/[%_]/.test(args.tool)) { where.push("json_extract(p.data,'$.tool') LIKE ?"); params.push(args.tool) }
-        else { where.push("json_extract(p.data,'$.tool') = ?"); params.push(args.tool) }
+        if (/[%_]/.test(args.tool)) { where.push("p.tool LIKE ?"); params.push(args.tool) }
+        else { where.push("p.tool = ?"); params.push(args.tool) }
       }
-      if (args.error_like) { where.push("json_extract(p.data,'$.state.error') LIKE ?"); params.push(`%${args.error_like.replace(/[%_]/g, m => "\\" + m)}%`) }
+      if (args.error_like) { where.push("p.error_text LIKE ?"); params.push(`%${args.error_like.replace(/[%_]/g, m => "\\" + m)}%`) }
       if (args.since_ms !== undefined) { where.push("p.time_created >= ?"); params.push(args.since_ms) }
       if (args.until_ms !== undefined) { where.push("p.time_created <= ?"); params.push(args.until_ms) }
-      if (args.archived === "no") where.push("p.session_id IN (SELECT id FROM session WHERE time_archived IS NULL)")
-      else if (args.archived === "only") where.push("p.session_id IN (SELECT id FROM session WHERE time_archived IS NOT NULL)")
+      if (args.archived === "no") where.push("p.session_id IN (SELECT id FROM session_v2 WHERE time_archived IS NULL)")
+      else if (args.archived === "only") where.push("p.session_id IN (SELECT id FROM session_v2 WHERE time_archived IS NOT NULL)")
       const whereSql = where.join(" AND ")
 
       if (args.group_by === "error") {
         const rows = stmt(`
-          SELECT json_extract(p.data,'$.state.error') AS error,
-                 p.time_created AS ts
+          ${PART_CTE}
+          SELECT error_text AS error,
+                 time_created AS ts
             FROM part p
            WHERE ${whereSql}`).all(...params) as any[]
         const groups = new Map<string, { key: string; count: number; first_ts: number; last_ts: number; sample_error: string }>()
@@ -69,11 +71,12 @@ export const listToolFailures = tool({
       let sql: string
       if (args.group_by === "tool") {
         sql = `
-          SELECT json_extract(p.data,'$.tool') AS key,
+          ${PART_CTE}
+          SELECT tool AS key,
                  COUNT(*) AS count,
-                 MIN(p.time_created) AS first_ts,
-                 MAX(p.time_created) AS last_ts,
-                 substr(MAX(json_extract(p.data,'$.state.error')), 1, 240) AS sample_error
+                 MIN(time_created) AS first_ts,
+                 MAX(time_created) AS last_ts,
+                 substr(MAX(error_text), 1, 240) AS sample_error
             FROM part p
            WHERE ${whereSql}
         GROUP BY key
@@ -81,11 +84,12 @@ export const listToolFailures = tool({
            LIMIT ?`
       } else {
         sql = `
-          SELECT p.session_id AS key,
+          ${PART_CTE}
+          SELECT session_id AS key,
                  COUNT(*) AS count,
-                 MIN(p.time_created) AS first_ts,
-                 MAX(p.time_created) AS last_ts,
-                 substr(MAX(json_extract(p.data,'$.state.error')), 1, 240) AS sample_error
+                 MIN(time_created) AS first_ts,
+                 MAX(time_created) AS last_ts,
+                 substr(MAX(error_text), 1, 240) AS sample_error
             FROM part p
            WHERE ${whereSql}
         GROUP BY key

@@ -8,6 +8,7 @@ import { stmt } from "../lib/db.js"
 import { runWithEnvelope, fail } from "../lib/envelope.js"
 import { decodePart, decodeMessage } from "../lib/decode.js"
 import { truncateString } from "../lib/truncate.js"
+import { getMessageById, getPartsForMessage } from "../lib/parts.js"
 
 const ALL_TYPES = ["text", "tool", "reasoning", "file", "patch", "step-start", "step-finish", "compaction", "subtask"] as const
 
@@ -26,24 +27,17 @@ export const getMessage = tool({
   },
   async execute(args) {
     return runWithEnvelope("get_message", 128, async (ctx) => {
-      const m = stmt(`
-        SELECT id, session_id, time_created, time_updated, data
-          FROM message WHERE id = ?`).get(args.message_id) as any
+      const m = getMessageById(args.message_id)
       if (!m) fail("NOT_FOUND", `message not found: ${args.message_id}`)
       const decoded = decodeMessage(m.data)
-      const session = stmt(`SELECT id, title, time_archived, agent, directory FROM session WHERE id = ?`).get(m.session_id) as any
+      const session = stmt(`SELECT id, title, time_archived, agent, directory FROM session_v2 WHERE id = ?`).get(m.session_id) as any
 
-      const where: string[] = ["p.message_id = ?"]
-      const params: any[] = [m.id]
+      let partRows = getPartsForMessage(m.id).map((p) => ({ ...p, data_bytes: Buffer.byteLength(p.data, "utf8") }))
       if (args.part_types && args.part_types.length > 0) {
-        where.push(`json_extract(p.data,'$.type') IN (${args.part_types.map(() => "?").join(",")})`)
-        params.push(...args.part_types)
+        const wanted = new Set(args.part_types)
+        partRows = partRows.filter((p) => wanted.has(pickType(p.data) as any))
       }
-      const partRows = stmt(`
-        SELECT p.id, p.time_created, p.data, LENGTH(p.data) AS data_bytes
-          FROM part p
-         WHERE ${where.join(" AND ")}
-      ORDER BY p.time_created ASC, p.id ASC`).all(...params) as { id: string; time_created: number; data: string; data_bytes: number }[]
+      partRows.sort((a, b) => a.time_created - b.time_created || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
 
       let anyTruncated = false
       const parts = partRows.map((r) => {

@@ -9,18 +9,18 @@ grant the one permission it needs to read the OpenCode session database.
 
 | Area | Requirement |
 | --- | --- |
-| OpenCode | A working OpenCode install with plugin host compatibility for `@opencode-ai/plugin >= 1.15.0` |
+| OpenCode | V2 host (`setup(ctx)` plugin entrypoint); `@opencode-ai/plugin` is used for tool authoring, not host compatibility |
 | Bun | `>= 1.0`; bundled with OpenCode, needed standalone only to run the CLIs directly. The plugin uses `bun:sqlite`, which should include SQLite `json1`; `check-deps` / `db-stats` verify it. |
 | `ck` (optional) | `>= 0.7`, only for `search-text` and `grep-session` |
 
 ## Steps
 
-1. Add the plugin to the `plugin` array in `~/.config/opencode/opencode.json`:
+1. Add the plugin to the `plugins` array in `~/.config/opencode/opencode.json`:
 
    ```jsonc
    {
      "$schema": "https://opencode.ai/config.json",
-     "plugin": ["opencode-sessions-explorer"]
+     "plugins": ["opencode-sessions-explorer"]
    }
    ```
 
@@ -32,7 +32,7 @@ grant the one permission it needs to read the OpenCode session database.
 
    ```jsonc
    {
-     "plugin": ["opencode-sessions-explorer@0.1.1"]
+     "plugins": ["opencode-sessions-explorer@0.1.1"]
    }
    ```
 
@@ -66,38 +66,40 @@ the checkout first:
 bun install --frozen-lockfile
 ```
 
-Then choose one source-dev mode.
+> **Do not add a local path to the `plugins` array.** The obvious approach —
+> pointing `plugins` at `src/plugin.ts` or `dist/plugin.js` with an absolute path,
+> `file://` URL, or relative path — does not work on OpenCode v2.0.26 (and every
+> `2.x` release checked so far). OpenCode's loader either rejects a file path
+> outright (`configured plugin path must be a directory`) or silently accepts a
+> directory path and never loads anything from it — no warning, no error, no
+> tools. This is an OpenCode bug, not a project-specific limitation; see
+> [Plugin Tools Do Not Appear After Config Change](support/troubleshooting.md#plugin-tools-do-not-appear-after-config-change)
+> for the evidence. The only mechanism that reliably loads an unpublished local
+> build is OpenCode's global plugin-discovery directory, and only in its flat-file
+> form (below) — a package *subdirectory* placed there is silently ignored too.
 
-#### Option A: Source TypeScript For Iteration
-
-Point the `plugin` array at the source entrypoint using an absolute path:
-
-```jsonc
-{
-  "plugin": ["/absolute/path/to/opencode-sessions-explorer/src/plugin.ts"]
-}
-```
-
-This is the fastest iteration path because there is no `dist/` rebuild step, but a
-full OpenCode restart is still required after config or code changes. Do not assume
-hot reload.
-
-#### Option B: Built JavaScript
-
-Build the bundle, then point OpenCode at the built entrypoint:
+Build the bundle, then drop the single built file directly into OpenCode's global
+plugin directory (create the directory if it does not exist):
 
 ```bash
 bun run build
+mkdir -p ~/.config/opencode/plugins
+cp dist/plugin.js ~/.config/opencode/plugins/opencode-sessions-explorer.js
 ```
 
-```jsonc
-{
-  "plugin": ["/absolute/path/to/opencode-sessions-explorer/dist/plugin.js"]
-}
-```
+The destination file name is cosmetic (it does not have to match the package name),
+but it **must** sit directly inside `~/.config/opencode/plugins/`, not in a
+subdirectory of it. Remove any `"plugins": ["opencode-sessions-explorer"]` (or
+pinned-version) entry from `opencode.json` while doing this — having both installed
+at once registers the tools twice.
 
-When using `dist/`, rebuild and fully restart OpenCode after code changes. There is
-no hot reload guarantee for local plugin paths.
+Rebuild and re-copy after every code change, then fully restart OpenCode (`opencode
+service restart`, or quit and reopen); there is no hot reload for local plugins.
+A one-line loop for iterating:
+
+```bash
+bun run build && cp dist/plugin.js ~/.config/opencode/plugins/opencode-sessions-explorer.js
+```
 
 For contributor commands, quality gates, and source-dev maintenance pointers, see
 the [Development Guide](maintainers/development.md).

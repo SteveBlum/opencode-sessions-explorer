@@ -14,6 +14,7 @@ import { stmt, locateDb } from "../lib/db.js"
 import { runWithEnvelope } from "../lib/envelope.js"
 import { decodeModel } from "../lib/decode.js"
 import { exportRoot } from "../lib/export.js"
+import { PART_CTE } from "../lib/parts.js"
 import { existsSync } from "node:fs"
 import { dirname, join } from "node:path"
 
@@ -48,7 +49,7 @@ export const currentSession = tool({
           SELECT id, project_id, parent_id, slug, directory, title, agent, model, cost,
                  tokens_input, tokens_output, tokens_reasoning, tokens_cache_read, tokens_cache_write,
                  time_created, time_updated, time_archived, share_url, workspace_id, version
-            FROM session WHERE id = ?`).get(sessionId) as any
+            FROM session_v2 WHERE id = ?`).get(sessionId) as any
       }
 
       // Build response
@@ -104,15 +105,18 @@ export const currentSession = tool({
       if (_args.detail !== "full") return { ...compact, suggestions }
 
       // Full detail only: counters and relationship lookups can be expensive on huge sessions.
-      const msgCount = sessionId ? Number((stmt(`SELECT COUNT(*) AS n FROM message WHERE session_id = ?`).get(sessionId) as any)?.n ?? 0) : 0
-      const partCount = sessionId ? Number((stmt(`SELECT COUNT(*) AS n FROM part WHERE session_id = ?`).get(sessionId) as any)?.n ?? 0) : 0
+      const msgCount = sessionId ? Number((stmt(`SELECT COUNT(*) AS n FROM session_message WHERE session_id = ?`).get(sessionId) as any)?.n ?? 0) : 0
+      const partCount = sessionId
+        ? Number(
+            (stmt(`SELECT SUM(CASE WHEN type='assistant' THEN COALESCE(json_array_length(data,'$.content'),0) ELSE 1 END) AS n FROM session_message WHERE session_id = ?`).get(sessionId) as any)?.n ?? 0,
+          )
+        : 0
       const toolStats = sessionId
         ? (stmt(`
-            SELECT json_extract(data,'$.tool') AS tool,
-                   json_extract(data,'$.state.status') AS status,
-                   COUNT(*) AS n
-              FROM part
-             WHERE session_id = ? AND json_extract(data,'$.type') = 'tool'
+            ${PART_CTE}
+            SELECT tool, status, COUNT(*) AS n
+              FROM part p
+             WHERE p.session_id = ? AND p.type = 'tool'
           GROUP BY tool, status
           ORDER BY n DESC`).all(sessionId) as any[])
         : []
@@ -125,11 +129,11 @@ export const currentSession = tool({
         if (s in entry) (entry as any)[s] += Number(r.n)
       }
       const children = sessionId
-        ? (stmt(`SELECT id, title, agent, time_created FROM session WHERE parent_id = ? ORDER BY time_created DESC LIMIT 20`).all(sessionId) as any[])
+        ? (stmt(`SELECT id, title, agent, time_created FROM session_v2 WHERE parent_id = ? ORDER BY time_created DESC LIMIT 20`).all(sessionId) as any[])
         : []
       let parent: any = null
       if (sessionRow?.parent_id) {
-        parent = stmt(`SELECT id, title, agent FROM session WHERE id = ?`).get(sessionRow.parent_id) as any
+        parent = stmt(`SELECT id, title, agent FROM session_v2 WHERE id = ?`).get(sessionRow.parent_id) as any
       }
 
       return {

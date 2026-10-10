@@ -1,5 +1,6 @@
 /**
- * Shared read-only bun:sqlite handle for `~/.local/share/opencode/opencode.db`.
+ * Shared read-only bun:sqlite handle for `~/.local/share/opencode/opencode.db`
+ * (OpenCode V2 schema: `session_v2` + `session_message`).
  *
  * - Opens ONCE per process, readonly + PRAGMA query_only=1 belt-and-braces.
  * - Locates the DB via $OPENCODE_SESSIONS_EXPLORER_DB env override, else platform default.
@@ -60,6 +61,7 @@ let _db: Database | null = null
 const _stmts = new Map<string, Statement>()
 const STMT_CACHE_LIMIT = 256
 
+/** The shared read-only connection to opencode.db (`session_v2`/`session_message` tables). */
 export function db(): Database {
   if (_db) return _db
   const path = locateDb()

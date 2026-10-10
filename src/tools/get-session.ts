@@ -11,6 +11,7 @@ import { tool } from "@opencode-ai/plugin"
 import { stmt } from "../lib/db.js"
 import { runWithEnvelope, fail } from "../lib/envelope.js"
 import { decodeModel } from "../lib/decode.js"
+import { PART_CTE } from "../lib/parts.js"
 
 export const getSession = tool({
   description:
@@ -29,26 +30,28 @@ export const getSession = tool({
                tokens_input, tokens_output, tokens_reasoning, tokens_cache_read, tokens_cache_write,
                time_created, time_updated, time_archived, time_compacting,
                workspace_id, path
-          FROM session WHERE id = ?
+          FROM session_v2 WHERE id = ?
       `).get(args.session_id) as any
       if (!row) fail("NOT_FOUND", `session not found: ${args.session_id}`)
 
-      const messageCount = (stmt(`SELECT COUNT(*) AS n FROM message WHERE session_id = ?`).get(args.session_id) as any)?.n ?? 0
-      const partCount = (stmt(`SELECT COUNT(*) AS n FROM part WHERE session_id = ?`).get(args.session_id) as any)?.n ?? 0
+      const messageCount = (stmt(`SELECT COUNT(*) AS n FROM session_message WHERE session_id = ?`).get(args.session_id) as any)?.n ?? 0
+      const partCount = (stmt(`SELECT SUM(CASE WHEN type='assistant' THEN COALESCE(json_array_length(data,'$.content'),0) ELSE 1 END) AS n FROM session_message WHERE session_id = ?`).get(args.session_id) as any)?.n ?? 0
 
       const partByType = stmt(`
-        SELECT json_extract(data,'$.type') AS t, COUNT(*) AS n
-          FROM part WHERE session_id = ?
+        ${PART_CTE}
+        SELECT type AS t, COUNT(*) AS n
+          FROM part p WHERE p.session_id = ?
        GROUP BY t
       `).all(args.session_id) as { t: string | null; n: number }[]
 
       const toolCallCounts = stmt(`
-        SELECT json_extract(data,'$.state.status') AS s, COUNT(*) AS n
-          FROM part WHERE session_id = ? AND json_extract(data,'$.type') = 'tool'
+        ${PART_CTE}
+        SELECT status AS s, COUNT(*) AS n
+          FROM part p WHERE p.session_id = ? AND p.type = 'tool'
        GROUP BY s
       `).all(args.session_id) as { s: string | null; n: number }[]
 
-      const children = stmt(`SELECT id, title FROM session WHERE parent_id = ? ORDER BY time_created DESC LIMIT 50`).all(args.session_id) as { id: string; title: string }[]
+      const children = stmt(`SELECT id, title FROM session_v2 WHERE parent_id = ? ORDER BY time_created DESC LIMIT 50`).all(args.session_id) as { id: string; title: string }[]
 
       return {
         session: {

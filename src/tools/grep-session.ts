@@ -34,7 +34,7 @@ export const grepSession = tool({
       if ("mode" in (args as object)) {
         fail("BAD_ARGS", "mode is not supported by grep-session", "Remove mode; grep-session always uses regex.")
       }
-      const session = stmt(`SELECT id, title, directory, time_archived FROM session WHERE id = ?`).get(args.session_id) as any
+      const session = stmt(`SELECT id, title, directory, time_archived FROM session_v2 WHERE id = ?`).get(args.session_id) as any
       if (!session) fail("NOT_FOUND", `session not found: ${args.session_id}`)
 
       try {

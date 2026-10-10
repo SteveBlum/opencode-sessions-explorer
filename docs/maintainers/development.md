@@ -23,10 +23,14 @@ gotchas for `opencode-sessions-explorer`.
 bun install --frozen-lockfile
 ```
 
-Load the plugin into a running OpenCode while iterating by pointing the config at
-your local checkout. Use the source TypeScript or built JavaScript options in
-[Install: From Source (Dev)](../install.md#from-source-dev); that page is the
-authoritative source-dev registration flow, including the full-restart requirement.
+Load the plugin into a running OpenCode while iterating by building it and dropping
+the bundled file into OpenCode's global plugin directory — **not** by pointing the
+`plugins` config array at your checkout; OpenCode v2.0.26 cannot load a local
+`plugins` path (see [Install: From Source (Dev)](../install.md#from-source-dev) for
+the working flow and why, and
+[Troubleshooting](../support/troubleshooting.md#plugin-tools-do-not-appear-after-config-change)
+for how this was diagnosed). That page is the authoritative source-dev registration
+flow, including the full-restart requirement.
 
 ## Local Dev Loop
 
@@ -59,7 +63,8 @@ than `bunx`, which exercises the published npm package.
 The plugin is a 4-layer pipeline:
 
 ```
-SQLite DB (read-only source of truth)
+SQLite DB (read-only source of truth; OpenCode V2 schema — session_v2 + session_message)
+  -> lib/parts.ts (PART_CTE for aggregate SQL, expandSessionMessage() for full bodies)
   -> filesystem export tree (~/.local/share/opencode-sessions-explorer; by-session + by-channel)
   -> ck regex scan (stateless; optional)
   -> enriched response (re-fetches session/part metadata from SQLite per hit)

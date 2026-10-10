@@ -9,6 +9,7 @@ import { SEARCHABLE_TYPES } from "./export-constants.js"
 import { acquireExportLock } from "./export-lock.js"
 import { reconcileTombstones, type TombstoneProgress } from "./export-tombstones.js"
 import { scheduleBackgroundReconcile } from "./export-background.js"
+import { loadPartById, loadPartRowsAfterId, loadSessionPartRows, type ExportPartRow } from "./parts.js"
 import {
   getLastSync as readLastSync,
   getSyncState as readSyncState,
@@ -91,7 +92,7 @@ function getSession(id: string): SessionInfo | null {
   const row = stmt(`
     SELECT id, title, project_id, directory, agent, model, cost,
            time_created, time_updated, time_archived, parent_id
-      FROM session WHERE id = ?`).get(id) as any
+      FROM session_v2 WHERE id = ?`).get(id) as any
   if (!row) return null
   sessionCache.set(id, row)
   return row
@@ -385,19 +386,13 @@ function buildSessionSummaryDocument(s: SessionInfo): string {
 }
 
 function firstUserPrompt(sessionId: string, direction: "ASC" | "DESC"): string | null {
-  const msg = stmt(`
-    SELECT id
-      FROM message
-     WHERE session_id = ? AND json_extract(data,'$.role') = 'user'
-  ORDER BY time_created ${direction}, id ${direction}
-     LIMIT 1`).get(sessionId) as { id: string } | null
-  if (!msg) return null
-  const rows = stmt(`
+  const row = stmt(`
     SELECT json_extract(data,'$.text') AS text
-      FROM part
-     WHERE message_id = ? AND json_extract(data,'$.type') = 'text'
-  ORDER BY time_created ASC, id ASC`).all(msg.id) as { text: string | null }[]
-  const joined = rows.map((r) => r.text ?? "").join("\n").trim()
+      FROM session_message
+     WHERE session_id = ? AND type = 'user'
+  ORDER BY time_created ${direction}, id ${direction}
+     LIMIT 1`).get(sessionId) as { text: string | null } | null
+  const joined = (row?.text ?? "").trim()
   if (!joined) return null
   return capBody(joined, "summary")
 }
@@ -450,16 +445,7 @@ function getFileIndex(sessionId: string, dir: string): SessionFileIndex {
   return idx
 }
 
-type PartExportRow = {
-  id: string
-  session_id: string
-  message_id: string
-  time_created: number
-  time_updated: number
-  data: string
-  data_bytes: number
-  role: string | null
-}
+type PartExportRow = ExportPartRow
 
 type DirtySessionRow = { id: string; time_updated: number }
 
@@ -769,7 +755,7 @@ function refreshTouchedSessions(root: string, touchedSessions: Set<string>): voi
     const fresh = stmt(`
       SELECT id, title, project_id, directory, agent, model, cost,
              time_created, time_updated, time_archived, parent_id
-        FROM session WHERE id = ?`).get(sid) as SessionInfo | null
+        FROM session_v2 WHERE id = ?`).get(sid) as SessionInfo | null
     if (fresh) {
       writeMeta(fresh, dir)
       writeSessionSummaryChannel(fresh, root)
@@ -782,42 +768,16 @@ function applyTombstoneProgress(progress: ExportProgress, tombstones: TombstoneP
   progress.tombstones_removed_sessions = tombstones.removed_sessions
 }
 
-function loadPartById(partId: string): PartExportRow | null {
-  return stmt(partSelectSql("WHERE p.id = ?")).get(partId) as PartExportRow | null
-}
-
-function loadPartRowsAfterId(afterId: string, limit: number): PartExportRow[] {
-  if (!afterId) return stmt(`${partSelectSql("")} ORDER BY p.id ASC LIMIT ?`).all(limit) as PartExportRow[]
-  return stmt(`${partSelectSql("WHERE p.id > ?")} ORDER BY p.id ASC LIMIT ?`).all(afterId, limit) as PartExportRow[]
-}
-
-function loadSessionPartRows(sessionId: string, afterId: string | null, limit: number): PartExportRow[] {
-  if (!afterId) {
-    return stmt(`${partSelectSql("WHERE p.session_id = ?")} ORDER BY p.id ASC LIMIT ?`).all(sessionId, limit) as PartExportRow[]
-  }
-  return stmt(`${partSelectSql("WHERE p.session_id = ? AND p.id > ?")} ORDER BY p.id ASC LIMIT ?`).all(sessionId, afterId, limit) as PartExportRow[]
-}
-
 function loadDirtySessionsAfter(cursor: ExportCursor | null, limit: number): DirtySessionRow[] {
   if (!cursor) {
-    return stmt(`SELECT id, time_updated FROM session ORDER BY time_updated ASC, id ASC LIMIT ?`).all(limit) as DirtySessionRow[]
+    return stmt(`SELECT id, time_updated FROM session_v2 ORDER BY time_updated ASC, id ASC LIMIT ?`).all(limit) as DirtySessionRow[]
   }
   return stmt(`
     SELECT id, time_updated
-      FROM session
+      FROM session_v2
      WHERE (time_updated > ? OR (time_updated = ? AND id > ?))
   ORDER BY time_updated ASC, id ASC
      LIMIT ?`).all(cursor.ts, cursor.ts, cursor.id, limit) as DirtySessionRow[]
-}
-
-function partSelectSql(where: string): string {
-  return `
-    SELECT p.id, p.session_id, p.message_id, p.time_created, p.time_updated,
-           p.data, LENGTH(p.data) AS data_bytes,
-           json_extract(m.data,'$.role') AS role
-      FROM part p
-      LEFT JOIN message m ON m.id = p.message_id
-      ${where}`
 }
 
 function timeExceeded(start: number, budgetMs: number | undefined): boolean {

@@ -33,28 +33,56 @@ to one tool or to the optional `ck` search path.
 OpenCode starts, but the `opencode-sessions-explorer-*` tools are not available to
 the model after editing config.
 
-Quick checks:
+**If you added a local path to the `plugins` array** (`src/plugin.ts`,
+`dist/plugin.js`, a `file://` URL, or a relative path), stop — this is expected to
+fail. As of OpenCode v2.0.26, the `plugins` array cannot load a local path at all:
+
+- A **file** path is rejected outright. The server log
+  (`~/.local/share/opencode/log/opencode.log`) shows
+  `message="configured plugin path must be a directory" target=<your path>`.
+- A **directory** path is accepted with no error or warning, and then silently
+  never loads anything. No log line identifies this case, which makes it the
+  easiest to miss.
+- A package **subdirectory** placed under `~/.config/opencode/plugins/` (OpenCode's
+  documented auto-discovery directory) is *also* silently ignored in this release —
+  confirmed with both this package and an unrelated third-party plugin on the same
+  host. Only a flat `.js`/`.ts` file placed directly inside that directory is
+  picked up.
+
+None of this is specific to `opencode-sessions-explorer` — it reproduces with any
+local plugin on affected OpenCode versions. Skip straight to the fix below rather
+than re-debugging the config.
+
+Quick checks (for the **published package** case — skip if you hit one of the local
+path symptoms above):
 
 - Confirm you edited the active OpenCode config path, usually
   `~/.config/opencode/opencode.json`.
-- Confirm the `plugin` array contains either the package spec
-  (`"opencode-sessions-explorer"` or a pinned version) or an absolute local path.
+- Confirm the `plugins` array (the documented V2 key — see the
+  [migration guide](https://opencode.ai/v2/docs/migrate-v1); the legacy V1 `plugin`
+  key may still be processed as a compatibility shim, but is not guaranteed) contains
+  the package spec: `"opencode-sessions-explorer"`, optionally with a pinned
+  version.
 - Confirm you fully quit and restarted OpenCode; do not assume plugin hot reload.
-- If using source TypeScript, confirm the path to `src/plugin.ts` exists.
-- If using built JavaScript, confirm `bun run build` produced `dist/plugin.js`.
-- Confirm `src/plugin.ts` exports only the plugin function; extra non-function
-  exports can make OpenCode reject the plugin entrypoint.
 
 Fix:
 
-- Correct the config, then fully restart OpenCode.
-- For source checkouts, see the supported source TS and built JS options in
-  [install.md#from-source-dev](../install.md#from-source-dev).
-- If a local source path still fails, run a local import check from the checkout:
+- **Published package:** correct the config entry, then fully restart OpenCode.
+  This path goes through OpenCode's npm auto-install and is not affected by the bug
+  above.
+- **Local checkout:** do not use the `plugins` array at all. Build and drop the
+  bundled file directly into `~/.config/opencode/plugins/` — see
+  [install.md#from-source-dev](../install.md#from-source-dev) for the exact steps.
+- Either way, confirm the tools are actually registered rather than guessing from
+  the model's behavior:
 
   ```bash
-  bun -e 'import("./src/plugin.ts").then((m) => { if (typeof m.default !== "function") throw new Error("default export is not a function") })'
+  opencode api get "/api/plugin?location[directory]=$(pwd)"
   ```
+
+  Look for an entry whose `id` is `opencode-sessions-explorer` with
+  `source.type` other than `builtin`. If it is absent, the plugin did not load;
+  if present, re-check your prompt/model routing instead.
 
 ## Search Returns CK_NOT_FOUND
 

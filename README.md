@@ -27,7 +27,8 @@ Unarchive session ses_… so I can open it again.
 
 | Area | Support | Notes |
 | --- | --- | --- |
-| OpenCode | Plugin host compatible with `@opencode-ai/plugin >= 1.15.0` | Loads the plugin and owns the source database |
+| OpenCode | V2 host only (`setup(ctx)` entrypoint) | `@opencode-ai/plugin` is used for tool authoring, not host compatibility |
+| DB schema | OpenCode V2 (`session_v2`/`session_message`) only | `src/lib/parts.ts` unnests `session_message.content[]`. Legacy V1 `session`/`message`/`part` not supported. |
 | Bun | `>= 1.0` | Runtime; the plugin uses `bun:sqlite` (OpenCode ships Bun), which should include SQLite `json1`; `check-deps` / `db-stats` verify it |
 | `ck` | `>= 0.7`, optional | Only `search-text` / `grep-session` need it; the other 16 tools work without it |
 | OS | macOS / Linux | Windows paths resolve via `%LOCALAPPDATA%` |
@@ -40,7 +41,7 @@ Unarchive session ses_… so I can open it again.
 // ~/.config/opencode/opencode.json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["opencode-sessions-explorer"],
+  "plugins": ["opencode-sessions-explorer"],
   "permission": {
     "external_directory": {
       "~/.local/share/opencode/**": "allow"
@@ -134,7 +135,10 @@ full first-run walkthrough, see [docs/install.md](docs/install.md) and
 ### Privacy and Safety
 
 - **Local and read-only by default.** 17 of 18 tools never write; no data leaves your
-  device through this plugin.
+  device through this plugin. Those 17 only ever open `opencode.db` with `readonly: true` +
+  `PRAGMA query_only=1`, so SQLite itself rejects any write attempt. `unarchive-session` is
+  the sole exception: one explicit `UPDATE session_v2 ...` through a separate, short-lived
+  write handle (`src/lib/db-write.ts`) — see Archived Session Recovery above.
 - **Secret redaction.** `search-text` / `grep-session` redact common secret shapes in
   snippets by default; `get-part` dereference is path-guarded to a whitelist root.
 - See [docs/reference/configuration.md](docs/reference/configuration.md) and

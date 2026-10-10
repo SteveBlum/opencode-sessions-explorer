@@ -21,7 +21,7 @@ history, then branch into the right workflow guide.
    ```jsonc
    {
      "$schema": "https://opencode.ai/config.json",
-     "plugin": ["opencode-sessions-explorer"],
+     "plugins": ["opencode-sessions-explorer"],
      "permission": {
        "external_directory": {
          "~/.local/share/opencode/**": "allow"

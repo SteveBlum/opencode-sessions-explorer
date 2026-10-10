@@ -6,9 +6,10 @@ import { channelExportComplete, runExport, exportRoot } from "../lib/export.js"
 import { existsSync } from "node:fs"
 import { join } from "node:path"
 import { truncateString, redactSecrets, snippet as makeSnippet } from "../lib/truncate.js"
-import { decodeModel } from "../lib/decode.js"
+import { decodeModel, decodePart, decodeMessage } from "../lib/decode.js"
 import { CHANNELS, channelsForSurface, channelWeight, inferSurface, looksLikeExactIdentifier, normalizeForDedupe, type SearchChannel, type SearchSurface } from "../lib/channel.js"
 import { table } from "../lib/table.js"
+import { getPartsByIds, getMessagesByIds } from "../lib/parts.js"
 
 export const searchText = tool({
   description:
@@ -109,7 +110,7 @@ function resolveScope(args: any): "all" | string[] {
   if (where.length === 0) return "all"
   // Bump to 5000 so a since/until_ms or other filter doesn't accidentally exclude
   // older sessions where the search term may legitimately live.
-  const sql = `SELECT id FROM session WHERE ${where.join(" AND ")} ORDER BY time_updated DESC LIMIT 5000`
+  const sql = `SELECT id FROM session_v2 WHERE ${where.join(" AND ")} ORDER BY time_updated DESC LIMIT 5000`
   const rows = stmt(sql).all(...params) as { id: string }[]
   return rows.map((r) => r.id)
 }
@@ -181,18 +182,18 @@ async function runWithCk(args: any, scopes: string[], ctx: any, sessionCount: nu
   const partIds = parsed.map((p) => p.partId).filter((x): x is string => !!x)
   const partInfo = new Map<string, { id: string; message_id: string; time_created: number; type: string }>()
   if (partIds.length > 0) {
-    const placeholders = partIds.map(() => "?").join(",")
-    const rows = stmt(`SELECT id, message_id, time_created, json_extract(data,'$.type') AS type FROM part WHERE id IN (${placeholders})`).all(...partIds) as any[]
-    for (const r of rows) partInfo.set(r.id, r)
+    for (const [id, part] of getPartsByIds(partIds)) {
+      partInfo.set(id, { id: part.id, message_id: part.message_id, time_created: part.time_created, type: decodePart(part.data).type })
+    }
   }
 
   // Batch-fetch message.role per message_id (for role filter)
   const msgIds = Array.from(new Set(Array.from(partInfo.values()).map((p) => p.message_id)))
   const roleByMsg = new Map<string, string>()
   if (msgIds.length > 0) {
-    const placeholders = msgIds.map(() => "?").join(",")
-    const rows = stmt(`SELECT id, json_extract(data,'$.role') AS role FROM message WHERE id IN (${placeholders})`).all(...msgIds) as any[]
-    for (const r of rows) roleByMsg.set(r.id, r.role ?? "unknown")
+    for (const [id, msg] of getMessagesByIds(msgIds)) {
+      roleByMsg.set(id, decodeMessage(msg.data).role ?? "unknown")
+    }
   }
 
   // Batch-fetch session metadata per session_id
@@ -200,7 +201,7 @@ async function runWithCk(args: any, scopes: string[], ctx: any, sessionCount: nu
   const sessInfo = new Map<string, any>()
   if (sessIds.length > 0) {
     const placeholders = sessIds.map(() => "?").join(",")
-    const rows = stmt(`SELECT id, title, project_id, directory, agent, model, time_archived, time_updated FROM session WHERE id IN (${placeholders})`).all(...sessIds) as any[]
+    const rows = stmt(`SELECT id, title, project_id, directory, agent, model, time_archived, time_updated FROM session_v2 WHERE id IN (${placeholders})`).all(...sessIds) as any[]
     for (const r of rows) sessInfo.set(r.id, r)
   }
 

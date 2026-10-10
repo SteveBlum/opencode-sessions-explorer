@@ -5,13 +5,13 @@
  * Path-traversal-checked. Cap: 128 KB.
  */
 import { tool } from "@opencode-ai/plugin"
-import { stmt } from "../lib/db.js"
 import { runWithEnvelope, fail } from "../lib/envelope.js"
 import { decodePart, type DecodedPart } from "../lib/decode.js"
 import { truncateString, approxJsonBytes } from "../lib/truncate.js"
 import { readFile, stat } from "node:fs/promises"
 import { resolve } from "node:path"
 import { isWhitelistedToolOutputPath } from "../lib/path-guard.js"
+import { getPartById } from "../lib/parts.js"
 
 export const getPart = tool({
   description:
@@ -26,8 +26,9 @@ export const getPart = tool({
   },
   async execute(args) {
     return runWithEnvelope("get_part", 128, async (ctx) => {
-      const row = stmt(`SELECT id, message_id, session_id, time_created, time_updated, data, LENGTH(data) AS data_bytes FROM part WHERE id = ?`).get(args.part_id) as any
+      const row = getPartById(args.part_id)
       if (!row) fail("NOT_FOUND", `part not found: ${args.part_id}`)
+      const data_bytes = Buffer.byteLength(row.data, "utf8")
 
       const decodedRaw = decodePart(row.data)
       const { decoded, truncatedFields } = capDecoded(decodedRaw, args.max_bytes)
@@ -63,7 +64,7 @@ export const getPart = tool({
           session_id: row.session_id,
           time_created: row.time_created,
           time_updated: row.time_updated,
-          data_bytes: row.data_bytes,
+          data_bytes,
         },
         decoded,
         truncated: tr.truncated || truncatedFields.length > 0,

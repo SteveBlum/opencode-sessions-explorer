@@ -1,5 +1,6 @@
 /**
- * Schema-drift detection. Runs RQ-02..06 + RQ-10 once per process and caches.
+ * Schema-drift detection against the OpenCode V2 schema (`session_v2` +
+ * `session_message`). Runs RQ-02..06 + RQ-10 once per process and caches.
  *
  * Hard-required tables/columns: drift here causes SCHEMA_DRIFT errors.
  * Defensively-read fields: drift here is logged in `drift_warnings` but does
@@ -18,10 +19,10 @@ export type SchemaState = {
   cached_at: number
 }
 
-const REQUIRED = {
-  session: ["id", "project_id", "parent_id", "directory", "title", "time_created", "time_updated", "time_archived", "agent", "model", "cost", "tokens_input", "tokens_output", "tokens_reasoning"],
-  message: ["id", "session_id", "time_created", "time_updated", "data"],
-  part: ["id", "message_id", "session_id", "time_created", "time_updated", "data"],
+/** Required tables/columns. */
+const REQUIRED_RAW: Record<string, string[]> = {
+  session_v2: ["id", "project_id", "parent_id", "directory", "title", "time_created", "time_updated", "time_archived", "agent", "model", "cost", "tokens_input", "tokens_output", "tokens_reasoning"],
+  session_message: ["id", "session_id", "type", "seq", "time_created", "time_updated", "data"],
 }
 
 let _state: SchemaState | null = null
@@ -43,15 +44,15 @@ export function getSchemaState(): SchemaState {
     warnings.push(`__drizzle_migrations unreadable: ${(e as Error).message}`)
   }
 
-  // RQ-03 — required tables
+  // RQ-03 — required tables (source-of-truth tables)
   const tables = db().query("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[]
   const tableSet = new Set(tables.map((t) => t.name))
-  for (const t of ["session", "message", "part"]) {
+  for (const t of Object.keys(REQUIRED_RAW)) {
     if (!tableSet.has(t)) hard.push(`missing table: ${t}`)
   }
 
   // RQ-04..06 — required columns
-  for (const [tbl, cols] of Object.entries(REQUIRED)) {
+  for (const [tbl, cols] of Object.entries(REQUIRED_RAW)) {
     if (!tableSet.has(tbl)) continue
     const rows = db().query(`PRAGMA table_info(${tbl})`).all() as { name: string }[]
     const colSet = new Set(rows.map((r) => r.name))
@@ -70,18 +71,23 @@ export function getSchemaState(): SchemaState {
     hard.push(`json1 unavailable: ${(e as Error).message}`)
   }
 
-  // busy_timeout — SQLite returns the value in a column named `timeout` (not `busy_timeout`)
+  // busy_timeout
   const bt = db().query("PRAGMA busy_timeout").get() as { timeout?: number } | null
   const busy_timeout_ms = Number(bt?.timeout ?? 0)
   if (busy_timeout_ms < 5000) warnings.push(`busy_timeout=${busy_timeout_ms} <5000`)
 
-  // table counts (cheap with sqlite_stat1; but we just count for clarity)
+  // "part" sums session_message.content[] lengths (assistant rows) + 1 per
+  // non-assistant row (lib/parts.ts).
   const counts: Record<string, number> = {}
-  for (const t of ["session", "message", "part"]) {
-    if (!tableSet.has(t)) continue
-    const r = db().query(`SELECT COUNT(*) AS n FROM ${t}`).get() as { n: number }
-    counts[t] = Number(r.n)
-  }
+  counts.session = (db().query(`SELECT COUNT(*) AS n FROM session_v2`).get() as { n: number }).n
+  counts.message = (db().query(`SELECT COUNT(*) AS n FROM session_message`).get() as { n: number }).n
+  counts.part = Number(
+    (db()
+      .query(
+        `SELECT SUM(CASE WHEN type='assistant' THEN COALESCE(json_array_length(data,'$.content'),0) ELSE 1 END) AS n FROM session_message`,
+      )
+      .get() as { n: number | null }).n ?? 0,
+  )
 
   _state = {
     migrations_head,

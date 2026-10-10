@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- The plugin now only loads under OpenCode V2's `setup(ctx)` entrypoint. `src/plugin.ts`
+  default-exports a plain `{ id, setup }` object (no V1 factory, no `server()`);
+  tool-registration logic lives in `src/lib/tool-registration.ts`. Install configs must use
+  V2's `plugins` array key (not the old `plugin` key) — docs updated accordingly.
+
+### Documentation
+- Rewrote the "From Source (Dev)" install flow
+  ([docs/install.md](docs/install.md#from-source-dev)) and the matching
+  troubleshooting entry
+  ([docs/support/troubleshooting.md](docs/support/troubleshooting.md#plugin-tools-do-not-appear-after-config-change)).
+  As of OpenCode v2.0.26, the `plugins` config array cannot load a local path at
+  all: a file path is rejected ("configured plugin path must be a directory") and a
+  directory path is silently ignored, with no warning or error either way. A
+  package *subdirectory* placed under `~/.config/opencode/plugins/` (the documented
+  auto-discovery location) is also silently ignored. The only mechanism confirmed
+  to work is building the plugin and copying the bundled `dist/plugin.js` directly
+  into `~/.config/opencode/plugins/<name>.js` as a flat file. This affects local
+  development only — installing the published package via
+  `"plugins": ["opencode-sessions-explorer"]` is unaffected, since that path goes
+  through OpenCode's npm auto-install rather than local-path resolution.
+
+### Added
+- **OpenCode V2 database schema support (V2 only).** OpenCode V2 replaced
+  `session`/`message`/`part` with `session_v2`/`session_message` (parts now live inline in
+  a `content` JSON array instead of standalone rows). Every tool queries `session_v2`/
+  `session_message` directly; `src/lib/parts.ts` unnests `content[]` via `PART_CTE`
+  (a `json_each`-based SQL fragment, for filter/group/aggregate queries) and
+  `expandSessionMessage()` (a JS mapper to the full part/message body, for tools that need
+  it verbatim). Parts get a synthesized `prt_<message_id>_<4-digit content index>` id.
+  `unarchive-session` now targets `session_v2` directly. `tests/fixtures/build-fixture.ts` /
+  `tests/verify-end-to-end.ts` target this schema exclusively.
+- MCP stdio entry point (`dist/mcp.js`, bin `opencode-sessions-explorer-mcp`) that
+  serves the tool registry to non-OpenCode MCP hosts. Exposes 16 of the 18 tools with
+  the `opencode-sessions-explorer-` prefix stripped; `current-session` (depends on
+  OpenCode host identity) and `unarchive-session` (the only database write path) are
+  withheld, keeping this entry point read-only. The OpenCode plugin entry point and
+  its build output are unchanged.
+
 ### Fixed
 - `list-sessions`, `list-tool-failures`, `search-sessions-meta`, `search-tool-calls`,
   `session-timeline`, and `cost-by-project` now fall back to their documented default
@@ -21,13 +60,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   regex-only and expose no `mode` argument; `ck` is invoked purely as a stateless
   regex scanner, with no semantic index build/refresh/status behavior.
 
-### Added
-- MCP stdio entry point (`dist/mcp.js`, bin `opencode-sessions-explorer-mcp`) that
-  serves the tool registry to non-OpenCode MCP hosts. Exposes 16 of the 18 tools with
-  the `opencode-sessions-explorer-` prefix stripped; `current-session` (depends on
-  OpenCode host identity) and `unarchive-session` (the only database write path) are
-  withheld, keeping this entry point read-only. The OpenCode plugin entry point and
-  its build output are unchanged.
+
 
 ## [0.1.4] - 2026-06-14
 

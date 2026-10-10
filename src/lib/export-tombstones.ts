@@ -3,6 +3,7 @@ import { join } from "node:path"
 import { CHANNELS, type SearchChannel } from "./channel.js"
 import { stmt } from "./db.js"
 import { SEARCHABLE_TYPES } from "./export-constants.js"
+import { getSearchablePartIdsForSession } from "./parts.js"
 
 export type TombstoneProgress = {
   scanned_sessions: number
@@ -97,19 +98,12 @@ function channelDir(root: string, channel: SearchChannel, sessionId: string): st
 }
 
 function loadSessionIds(): Set<string> {
-  const rows = stmt(`SELECT id FROM session`).all() as { id: string }[]
+  const rows = stmt(`SELECT id FROM session_v2`).all() as { id: string }[]
   return new Set(rows.map((row) => row.id))
 }
 
 function loadSearchablePartIds(sessionId: string): Set<string> {
-  const placeholders = SEARCHABLE_TYPES.map(() => "?").join(",")
-  const rows = stmt(`
-    SELECT id
-      FROM part
-     WHERE session_id = ?
-       AND json_extract(data,'$.type') IN (${placeholders})
-  ORDER BY id ASC`).all(sessionId, ...SEARCHABLE_TYPES) as { id: string }[]
-  return new Set(rows.map((row) => row.id))
+  return getSearchablePartIdsForSession(sessionId, SEARCHABLE_TYPES)
 }
 
 function safeReadDir(dir: string): string[] {

@@ -7,9 +7,10 @@
 import { tool } from "@opencode-ai/plugin"
 import { stmt } from "../lib/db.js"
 import { runWithEnvelope, fail } from "../lib/envelope.js"
-import { decodePart, decodeMessage, decodeModel } from "../lib/decode.js"
+import { decodeModel } from "../lib/decode.js"
 import { truncateString } from "../lib/truncate.js"
 import { compactPath } from "../lib/channel.js"
+import { PART_CTE } from "../lib/parts.js"
 
 export const sessionSummary = tool({
   description:
@@ -27,26 +28,25 @@ export const sessionSummary = tool({
         SELECT id, project_id, directory, title, agent, model, cost,
                tokens_input, tokens_output, tokens_reasoning,
                time_created, time_updated, time_archived
-          FROM session WHERE id = ?`).get(args.session_id) as any
+          FROM session_v2 WHERE id = ?`).get(args.session_id) as any
       if (!session) fail("NOT_FOUND", `session not found: ${args.session_id}`)
 
-      // Find first/last user message + grab its text parts.
+      // Find first/last user message — text lives directly on the session_message row.
       const userMsgs = stmt(`
-        SELECT m.id, m.time_created
-          FROM message m
-         WHERE m.session_id = ? AND json_extract(m.data,'$.role') = 'user'
-         ORDER BY m.time_created ASC, m.id ASC`).all(args.session_id) as { id: string; time_created: number }[]
+        SELECT id, time_created
+          FROM session_message
+         WHERE session_id = ? AND type = 'user'
+         ORDER BY time_created ASC, id ASC`).all(args.session_id) as { id: string; time_created: number }[]
 
       const firstPrompt = userMsgs[0] ? collectUserText(userMsgs[0].id, args.max_prompt_bytes) : null
       const lastPrompt = userMsgs.length > 1 ? collectUserText(userMsgs[userMsgs.length - 1]!.id, args.max_prompt_bytes) : firstPrompt
 
       // Top tools used (by count, excluding errors)
       const topTools = stmt(`
-        SELECT json_extract(data,'$.tool') AS tool,
-               json_extract(data,'$.state.status') AS status,
-               COUNT(*) AS n
-          FROM part
-         WHERE session_id = ? AND json_extract(data,'$.type') = 'tool'
+        ${PART_CTE}
+        SELECT tool, status, COUNT(*) AS n
+          FROM part p
+         WHERE p.session_id = ? AND p.type = 'tool'
          GROUP BY tool, status`).all(args.session_id) as { tool: string; status: string; n: number }[]
 
       const toolSummary: Record<string, { total: number; completed: number; error: number }> = {}
@@ -72,20 +72,24 @@ export const sessionSummary = tool({
         filesTouched.set(path, cur)
       }
       const patchRows = stmt(`
-        SELECT data FROM part
-         WHERE session_id = ? AND json_extract(data,'$.type') = 'patch'
-         LIMIT 500`).all(args.session_id) as { data: string }[]
+        ${PART_CTE}
+        SELECT files_json FROM part p
+         WHERE p.session_id = ? AND p.type = 'patch'
+         LIMIT 500`).all(args.session_id) as { files_json: string | null }[]
       for (const r of patchRows) {
-        const d = decodePart(r.data)
-        if (d.type === "patch") for (const f of d.files) addFile(f, 3)
+        if (!r.files_json) continue
+        try {
+          const files = JSON.parse(r.files_json)
+          if (Array.isArray(files)) for (const f of files) if (typeof f === "string") addFile(f, 3)
+        } catch { /* malformed — skip */ }
       }
       const fileToolRows = stmt(`
-        SELECT json_extract(data,'$.state.input.filePath') AS fp,
-               json_extract(data,'$.tool') AS tool
-           FROM part
-          WHERE session_id = ? AND json_extract(data,'$.type') = 'tool'
-                AND json_extract(data,'$.tool') IN ('read','edit','write','apply_patch')
-                AND json_extract(data,'$.state.input.filePath') IS NOT NULL
+        ${PART_CTE}
+        SELECT input_filepath AS fp, tool
+           FROM part p
+          WHERE p.session_id = ? AND p.type = 'tool'
+                AND tool IN ('read','edit','write','apply_patch')
+                AND input_filepath IS NOT NULL
           LIMIT 2000`).all(args.session_id) as { fp: string | null; tool: string | null }[]
       for (const { fp, tool } of fileToolRows) {
         if (!fp) continue
@@ -130,13 +134,8 @@ export const sessionSummary = tool({
 })
 
 function collectUserText(messageId: string, maxBytes: number): { text: string; truncated: boolean; original_bytes: number } | null {
-  const rows = stmt(`
-    SELECT json_extract(data,'$.text') AS t
-      FROM part
-     WHERE message_id = ? AND json_extract(data,'$.type') = 'text'
-     ORDER BY time_created ASC, id ASC`).all(messageId) as { t: string | null }[]
-  if (rows.length === 0) return null
-  const joined = rows.map((r) => r.t ?? "").join("\n").trim()
+  const row = stmt(`SELECT json_extract(data,'$.text') AS t FROM session_message WHERE id = ?`).get(messageId) as { t: string | null } | null
+  const joined = (row?.t ?? "").trim()
   if (!joined) return null
   const tr = truncateString(joined, maxBytes)
   return { text: tr.value, truncated: tr.truncated, original_bytes: tr.originalBytes }

@@ -21,7 +21,7 @@ to your OpenCode config and restart:
 // ~/.config/opencode/opencode.json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["opencode-sessions-explorer"],
+  "plugins": ["opencode-sessions-explorer"],
   "permission": {
     "external_directory": {
       "~/.local/share/opencode/**": "allow"

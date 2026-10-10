@@ -25,7 +25,7 @@ export const sessionGenealogy = tool({
   },
   async execute(args) {
     return runWithEnvelope("session_genealogy", 64, async (ctx) => {
-      const root = stmt(`SELECT id, title, parent_id, agent, time_created, time_archived FROM session WHERE id = ?`).get(args.session_id) as any
+      const root = stmt(`SELECT id, title, parent_id, agent, time_created, time_archived FROM session_v2 WHERE id = ?`).get(args.session_id) as any
       if (!root) fail("NOT_FOUND", `session not found: ${args.session_id}`)
 
       const ancestors: Mini[] = []
@@ -35,7 +35,7 @@ export const sessionGenealogy = tool({
         for (let d = 0; d < args.max_depth; d++) {
           if (!cur?.parent_id) break
           if (seen.has(cur.parent_id)) { ctx.warnings.push("cycle detected in parent chain"); break }
-          const p = stmt(`SELECT id, title, parent_id, agent, time_created, time_archived FROM session WHERE id = ?`).get(cur.parent_id) as any
+          const p = stmt(`SELECT id, title, parent_id, agent, time_created, time_archived FROM session_v2 WHERE id = ?`).get(cur.parent_id) as any
           if (!p) { ctx.warnings.push(`dangling parent_id: ${cur.parent_id}`); break }
           if (!args.include_archived && p.time_archived != null) break
           ancestors.push({ id: p.id, title: p.title, agent: p.agent, time_created: p.time_created, time_archived: p.time_archived })
@@ -49,9 +49,9 @@ export const sessionGenealogy = tool({
         if (depth >= args.max_depth) return null
         if (seen.has(id)) { ctx.warnings.push(`cycle in descendants at ${id}`); return null }
         seen.add(id)
-        const me = stmt(`SELECT id, title, agent, time_created, time_archived FROM session WHERE id = ?`).get(id) as any
+        const me = stmt(`SELECT id, title, agent, time_created, time_archived FROM session_v2 WHERE id = ?`).get(id) as any
         if (!me) return null
-        const children = stmt(`SELECT id FROM session WHERE parent_id = ?`).all(id) as { id: string }[]
+        const children = stmt(`SELECT id FROM session_v2 WHERE parent_id = ?`).all(id) as { id: string }[]
         const visibleChildren: Node[] = []
         for (const c of children) {
           const sub = buildTree(c.id, depth + 1, new Set(seen))

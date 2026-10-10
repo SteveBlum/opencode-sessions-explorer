@@ -10,6 +10,7 @@ import { runWithEnvelope } from "../lib/envelope.js"
 import { decodeCursor, encodeCursor } from "../lib/pagination.js"
 import { snippet } from "../lib/truncate.js"
 import { table } from "../lib/table.js"
+import { PART_CTE } from "../lib/parts.js"
 
 export const searchToolCalls = tool({
   description:
@@ -34,36 +35,37 @@ export const searchToolCalls = tool({
   },
   async execute(args) {
     return runWithEnvelope("search_tool_calls", 160, async (ctx) => {
-      const where: string[] = ["json_extract(p.data,'$.type') = 'tool'"]
+      const where: string[] = ["p.type = 'tool'"]
       const params: any[] = []
       if (args.tool) {
-        if (/[%_]/.test(args.tool)) { where.push("json_extract(p.data,'$.tool') LIKE ?"); params.push(args.tool) }
-        else { where.push("json_extract(p.data,'$.tool') = ?"); params.push(args.tool) }
+        if (/[%_]/.test(args.tool)) { where.push("p.tool LIKE ?"); params.push(args.tool) }
+        else { where.push("p.tool = ?"); params.push(args.tool) }
       }
-      if (args.status !== "any") { where.push("json_extract(p.data,'$.state.status') = ?"); params.push(args.status) }
-      if (args.input_like) { where.push("json_extract(p.data,'$.state.input') LIKE ?"); params.push(`%${args.input_like.replace(/[%_]/g, m => "\\" + m)}%`) }
-      if (args.output_like) { where.push("json_extract(p.data,'$.state.output') LIKE ?"); params.push(`%${args.output_like.replace(/[%_]/g, m => "\\" + m)}%`) }
-      if (args.error_like) { where.push("json_extract(p.data,'$.state.error') LIKE ?"); params.push(`%${args.error_like.replace(/[%_]/g, m => "\\" + m)}%`) }
+      if (args.status !== "any") { where.push("p.status = ?"); params.push(args.status) }
+      if (args.input_like) { where.push("p.input_json LIKE ?"); params.push(`%${args.input_like.replace(/[%_]/g, m => "\\" + m)}%`) }
+      if (args.output_like) { where.push("p.output_text LIKE ?"); params.push(`%${args.output_like.replace(/[%_]/g, m => "\\" + m)}%`) }
+      if (args.error_like) { where.push("p.error_text LIKE ?"); params.push(`%${args.error_like.replace(/[%_]/g, m => "\\" + m)}%`) }
       if (args.session_id) { where.push("p.session_id = ?"); params.push(args.session_id) }
-      if (args.project_id) { where.push("p.session_id IN (SELECT id FROM session WHERE project_id = ?)"); params.push(args.project_id) }
+      if (args.project_id) { where.push("p.session_id IN (SELECT id FROM session_v2 WHERE project_id = ?)"); params.push(args.project_id) }
       if (args.since_ms !== undefined) { where.push("p.time_created >= ?"); params.push(args.since_ms) }
       if (args.until_ms !== undefined) { where.push("p.time_created <= ?"); params.push(args.until_ms) }
-      if (args.archived === "no") where.push("p.session_id IN (SELECT id FROM session WHERE time_archived IS NULL)")
-      else if (args.archived === "only") where.push("p.session_id IN (SELECT id FROM session WHERE time_archived IS NOT NULL)")
+      if (args.archived === "no") where.push("p.session_id IN (SELECT id FROM session_v2 WHERE time_archived IS NULL)")
+      else if (args.archived === "only") where.push("p.session_id IN (SELECT id FROM session_v2 WHERE time_archived IS NOT NULL)")
       const cursor = decodeCursor(args.cursor)
       if (cursor) {
         where.push("(p.time_created < ? OR (p.time_created = ? AND p.id < ?))")
         params.push(cursor.ts, cursor.ts, cursor.id)
       }
       const sql = `
+        ${PART_CTE}
         SELECT p.id AS part_id, p.session_id, p.message_id, p.time_created,
-               json_extract(p.data,'$.tool') AS tool,
-               json_extract(p.data,'$.state.status') AS status,
-               substr(COALESCE(json_extract(p.data,'$.state.error'),''), 1, 240) AS error_snippet,
-               substr(COALESCE(json_extract(p.data,'$.state.output'),''), 1, 240) AS output_snippet,
-               substr(COALESCE(json_extract(p.data,'$.state.input'),''), 1, 240) AS input_snippet,
-               json_extract(p.data,'$.state.time.start') AS t_start,
-               json_extract(p.data,'$.state.time.end') AS t_end
+               p.tool AS tool,
+               p.status AS status,
+               substr(COALESCE(p.error_text,''), 1, 240) AS error_snippet,
+               substr(COALESCE(p.output_text,''), 1, 240) AS output_snippet,
+               substr(COALESCE(p.input_json,''), 1, 240) AS input_snippet,
+               p.t_start AS t_start,
+               p.t_end AS t_end
           FROM part p
          WHERE ${where.join(" AND ")}
       ORDER BY p.time_created DESC, p.id DESC

@@ -48,7 +48,7 @@ export const unarchiveSession = tool({
       // Read-only lookup: clean NOT_FOUND + reporting (directory helps the user
       // know where to open OpenCode to see the restored session).
       const row = stmt(
-        `SELECT id, title, directory FROM session WHERE id = ?`,
+        `SELECT id, title, directory FROM session_v2 WHERE id = ?`,
       ).get(args.session_id) as { id: string; title: string | null; directory: string | null } | undefined
 
       if (!row) fail("NOT_FOUND", `session not found: ${args.session_id}`)

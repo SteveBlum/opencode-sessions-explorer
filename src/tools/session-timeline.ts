@@ -14,6 +14,7 @@ import { decodePart } from "../lib/decode.js"
 import { truncateString } from "../lib/truncate.js"
 import { decodeCursor, encodeCursor } from "../lib/pagination.js"
 import { table } from "../lib/table.js"
+import { getPartsForSession } from "../lib/parts.js"
 
 const ALL_TYPES = ["text", "tool", "reasoning", "file", "patch", "step-start", "step-finish", "compaction", "subtask"] as const
 const DEFAULT_TYPES = ["text", "tool", "reasoning", "file", "patch", "subtask"] as const
@@ -38,46 +39,38 @@ export const sessionTimeline = tool({
   async execute(args) {
     return runWithEnvelope("session_timeline", 128, async (ctx) => {
       // Confirm session exists
-      const session = stmt(`SELECT id, time_archived FROM session WHERE id = ?`).get(args.session_id) as any
+      const session = stmt(`SELECT id, time_archived FROM session_v2 WHERE id = ?`).get(args.session_id) as any
       if (!session) fail("NOT_FOUND", `session not found: ${args.session_id}`)
 
-      const where: string[] = ["p.session_id = ?"]
-      const params: any[] = [args.session_id]
-      const types = args.types && args.types.length > 0 ? args.types : [...DEFAULT_TYPES]
-      where.push(`json_extract(p.data,'$.type') IN (${types.map(() => "?").join(",")})`)
-      params.push(...types)
-      if (args.from_ts !== undefined) { where.push("p.time_created >= ?"); params.push(args.from_ts) }
-      if (args.until_ts !== undefined) { where.push("p.time_created <= ?"); params.push(args.until_ts) }
+      const types = new Set(args.types && args.types.length > 0 ? args.types : [...DEFAULT_TYPES])
       const cursor = decodeCursor(args.cursor)
-      if (cursor) {
-        where.push("(p.time_created > ? OR (p.time_created = ? AND p.id > ?))")
-        params.push(cursor.ts, cursor.ts, cursor.id)
-      }
-      const sql = `
-        SELECT p.id AS part_id, p.message_id, p.time_created, p.data, LENGTH(p.data) AS data_bytes
-          FROM part p
-         WHERE ${where.join(" AND ")}
-      ORDER BY p.time_created ASC, p.id ASC
-         LIMIT ?`
-      params.push((args.limit ?? 100) + 1)
-      const rows = stmt(sql).all(...params) as { part_id: string; message_id: string; time_created: number; data: string; data_bytes: number }[]
+
+      let candidates = getPartsForSession(args.session_id)
+        .map((p) => ({ ...p, decoded: decodePart(p.data) }))
+        .filter((p) => types.has(p.decoded.type as any))
+      if (args.from_ts !== undefined) candidates = candidates.filter((p) => p.time_created >= args.from_ts!)
+      if (args.until_ts !== undefined) candidates = candidates.filter((p) => p.time_created <= args.until_ts!)
+      if (cursor) candidates = candidates.filter((p) => p.time_created > cursor.ts || (p.time_created === cursor.ts && p.id > cursor.id))
+      candidates.sort((a, b) => a.time_created - b.time_created || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+
+      const limit = args.limit ?? 100
       let hasMore = false
-      if (rows.length > (args.limit ?? 100)) { rows.pop(); hasMore = true }
-      if (hasMore && rows.length > 0) {
-        const last = rows[rows.length - 1]!
-        ctx.nextCursor = encodeCursor({ ts: last.time_created, id: last.part_id })
+      if (candidates.length > limit) {
+        candidates = candidates.slice(0, limit)
+        hasMore = true
       }
-      const rawEvents = rows.map((r) => {
-        const d = decodePart(r.data)
-        return {
-          part_id: r.part_id,
-          message_id: r.message_id,
-          ts: r.time_created,
-          type: d.type,
-          data_bytes: r.data_bytes,
-          summary: summarize(d, args.max_summary_chars),
-        }
-      })
+      if (hasMore && candidates.length > 0) {
+        const last = candidates[candidates.length - 1]!
+        ctx.nextCursor = encodeCursor({ ts: last.time_created, id: last.id })
+      }
+      const rawEvents = candidates.map((p) => ({
+        part_id: p.id,
+        message_id: p.message_id,
+        ts: p.time_created,
+        type: p.decoded.type,
+        data_bytes: Buffer.byteLength(p.data, "utf8"),
+        summary: summarize(p.decoded, args.max_summary_chars),
+      }))
       const events = args.granularity === "turns" ? collapseTurns(rawEvents, args.max_summary_chars ?? 200) : rawEvents
       return {
         session_id: args.session_id,

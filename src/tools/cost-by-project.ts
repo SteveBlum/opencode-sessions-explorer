@@ -58,7 +58,7 @@ export const costByProject = tool({
                SUM(CASE WHEN cost > 0 OR tokens_input > 0 THEN 1 ELSE 0 END) AS known_count,
                MIN(time_created) AS first_ts,
                MAX(time_updated) AS last_ts
-          FROM session
+          FROM session_v2
           ${whereSql}
        GROUP BY key
        ${having.length ? "HAVING " + having.join(" AND ") : ""}

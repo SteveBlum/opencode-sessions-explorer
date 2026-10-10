@@ -56,7 +56,7 @@ export const listSessions = tool({
         SELECT s.id, s.project_id, s.parent_id, s.directory, s.title, s.agent, s.model,
                s.cost, s.tokens_input, s.tokens_output, s.tokens_reasoning,
                s.time_created, s.time_updated, s.time_archived, s.workspace_id, s.slug
-          FROM session s
+          FROM session_v2 s
           ${whereSql}
        ORDER BY s.time_updated DESC, s.id DESC
           LIMIT ?`

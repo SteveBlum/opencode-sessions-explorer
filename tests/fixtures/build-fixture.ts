@@ -2,19 +2,47 @@
  * Synthetic SQLite fixture builder for hermetic `bun test` runs.
  *
  * `buildFixtureDb(dbPath)` materializes a SMALL, deterministic opencode.db-shaped
- * database using bun:sqlite. It creates the session/message/part tables with ALL
- * columns that schema.ts hard-requires PLUS every extra column the tools SELECT,
- * a __drizzle_migrations table (one "2026" row), and a tiny dataset crafted so the
+ * database using bun:sqlite — on the OpenCode V2 schema (`session_v2` +
+ * `session_message`; NO legacy `session`/`message`/`part` tables, matching a
+ * fresh V2-only install). It creates the tables with ALL columns that
+ * schema.ts hard-requires PLUS every extra column the tools SELECT, a
+ * `__drizzle_migrations` table (one row), and a tiny dataset crafted so the
  * rehearsal probes pass WITHOUT touching the author's real ~/.local/share DB.
  *
  * The exported `FIXTURES` constant is the single source of truth for the IDs /
  * phrases / expected_counts shared between this generator and tests/helpers.ts.
+ * Part ids are the SAME `prt_<session_message_id>_<content_index>` ids the
+ * plugin's own read adapter (`src/lib/parts.ts`) synthesizes at read time
+ * — see `partId()` below, which mirrors that scheme exactly.
  *
  * NOTE: this module has NO import-time side effects (it never opens a DB); only
  * calling buildFixtureDb() writes anything.
  */
 import { Database } from "bun:sqlite"
 import { join } from "node:path"
+
+/** Mirrors parts.ts#makePartId — keep these in sync. */
+function partId(sessionMessageId: string, idx: number): string {
+  return `prt_${sessionMessageId.replace(/^msg_/, "")}_${String(idx).padStart(4, "0")}`
+}
+
+/**
+ * Message ids embed a zero-padded GLOBAL sequence number (m0001, m0002, …) in
+ * chronological insertion order. This matters: export.ts's incremental sync
+ * paginates parts via lexical `p.id > ?` cursors (both per-session and
+ * globally), and synthesized part ids are `prt_<message_id>_<idx>` — so the
+ * message id itself must sort the same way its timestamp does. Real OpenCode
+ * message ids are ULIDs (naturally time-sortable); these fixture ids fake
+ * that property deliberately instead of using human-readable names.
+ */
+const MSG = {
+  active_user: "msg_fix_m0001",
+  active_asst: "msg_fix_m0002",
+  a002_asst: "msg_fix_m0003",
+  bigpart_user: "msg_fix_m0004",
+  bigmsg_asst: "msg_fix_m0005",
+  bigpart_patch_asst: "msg_fix_m0006",
+} as const
 
 /** Single source of truth for hermetic fixture identities. Mirrors fixtures.json shape. */
 export const FIXTURES = {
@@ -27,16 +55,16 @@ export const FIXTURES = {
     missing: "ses_fix_missing_xyz",
   },
   messages: {
-    active_first_user: "msg_fix_active_u1",
-    big_message_150mb: "msg_fix_bigmsg_a1",
+    active_first_user: MSG.active_user,
+    big_message_150mb: MSG.bigmsg_asst,
     missing: "msg_fix_missing_xyz",
   },
   parts: {
-    text_active: "prt_fix_active_text01",
-    tool_completed: "prt_fix_active_tooldone1",
-    tool_error: "prt_fix_active_toolerr1",
-    big_5mb_patch: "prt_fix_bigpatch0001",
-    tool_with_outputpath: "prt_fix_outpath0001",
+    text_active: partId(MSG.active_user, 0),
+    tool_completed: partId(MSG.active_asst, 0),
+    tool_error: partId(MSG.active_asst, 1),
+    big_5mb_patch: partId(MSG.bigpart_patch_asst, 220),
+    tool_with_outputpath: partId(MSG.a002_asst, 0),
     missing: "prt_fix_missing_xyz",
   },
   phrases: {
@@ -72,14 +100,12 @@ type SessionSpec = {
   idx: number
 }
 
-function msgData(role: "user" | "assistant" | "system"): string {
-  return JSON.stringify({
-    role,
-    agent: "build",
-    model: { providerID: "anthropic", modelID: "claude-opus-4-8" },
-    cost: 0.1,
-    tokens: { input: 100, output: 50, reasoning: 10, cache: { read: 5, write: 2 } },
-  })
+/** Common message-level metadata (agent/model/cost/tokens) shared by every session_message row. */
+const MSG_META = {
+  agent: "build",
+  model: { providerID: "anthropic", modelID: "claude-opus-4-8" },
+  cost: 0.1,
+  tokens: { input: 100, output: 50, reasoning: 10, cache: { read: 5, write: 2 } },
 }
 
 export function buildFixtureDb(dbPath: string): void {
@@ -89,45 +115,37 @@ export function buildFixtureDb(dbPath: string): void {
     db.exec("PRAGMA foreign_keys = OFF;")
 
     db.exec(`
-      CREATE TABLE session (
+      CREATE TABLE session_v2 (
         id TEXT PRIMARY KEY,
         project_id TEXT,
         parent_id TEXT,
-        directory TEXT,
-        title TEXT,
+        workspace_id TEXT,
         slug TEXT,
+        directory TEXT,
+        path TEXT,
+        title TEXT,
         version TEXT,
         share_url TEXT,
-        workspace_id TEXT,
-        path TEXT,
-        agent TEXT,
-        model TEXT,
         cost REAL,
         tokens_input INTEGER,
         tokens_output INTEGER,
         tokens_reasoning INTEGER,
         tokens_cache_read INTEGER,
         tokens_cache_write INTEGER,
+        agent TEXT,
+        model TEXT,
         time_created INTEGER,
         time_updated INTEGER,
-        time_archived INTEGER,
-        time_compacting INTEGER
+        time_compacting INTEGER,
+        time_archived INTEGER
       );
     `)
     db.exec(`
-      CREATE TABLE message (
+      CREATE TABLE session_message (
         id TEXT PRIMARY KEY,
         session_id TEXT,
-        time_created INTEGER,
-        time_updated INTEGER,
-        data TEXT
-      );
-    `)
-    db.exec(`
-      CREATE TABLE part (
-        id TEXT PRIMARY KEY,
-        message_id TEXT,
-        session_id TEXT,
+        type TEXT,
+        seq INTEGER,
         time_created INTEGER,
         time_updated INTEGER,
         data TEXT
@@ -144,16 +162,14 @@ export function buildFixtureDb(dbPath: string): void {
       .run(1, "0001_2026_05_initial_schema", T)
 
     const insSession = db.query(`
-      INSERT INTO session (
-        id, project_id, parent_id, directory, title, slug, version, share_url,
-        workspace_id, path, agent, model, cost, tokens_input, tokens_output,
-        tokens_reasoning, tokens_cache_read, tokens_cache_write,
-        time_created, time_updated, time_archived, time_compacting
+      INSERT INTO session_v2 (
+        id, project_id, parent_id, workspace_id, slug, directory, path, title, version,
+        share_url, cost, tokens_input, tokens_output, tokens_reasoning, tokens_cache_read,
+        tokens_cache_write, agent, model, time_created, time_updated, time_compacting, time_archived
       ) VALUES (
-        $id, $project_id, $parent_id, $directory, $title, $slug, $version, $share_url,
-        $workspace_id, $path, $agent, $model, $cost, $tokens_input, $tokens_output,
-        $tokens_reasoning, $tokens_cache_read, $tokens_cache_write,
-        $time_created, $time_updated, $time_archived, $time_compacting
+        $id, $project_id, $parent_id, $workspace_id, $slug, $directory, $path, $title, $version,
+        $share_url, $cost, $tokens_input, $tokens_output, $tokens_reasoning, $tokens_cache_read,
+        $tokens_cache_write, $agent, $model, $time_created, $time_updated, $time_compacting, $time_archived
       )
     `)
 
@@ -165,25 +181,25 @@ export function buildFixtureDb(dbPath: string): void {
         $id: s.id,
         $project_id: s.project_id ?? "global",
         $parent_id: s.parent_id ?? null,
-        $directory: s.directory ?? DIR_A,
-        $title: s.title,
-        $slug: s.id.replace(/^ses_/, "slug-"),
-        $version: "1.15.10",
-        $share_url: null,
         $workspace_id: "wsp_fix_0001",
+        $slug: s.id.replace(/^ses_/, "slug-"),
+        $directory: s.directory ?? DIR_A,
         $path: s.directory ?? DIR_A,
-        $agent: s.agent ?? "build",
-        $model: s.model ?? MODEL_A,
+        $title: s.title,
+        $version: "2.0.26",
+        $share_url: null,
         $cost: s.cost ?? 0.5,
         $tokens_input: tokens_input,
         $tokens_output: s.tokens_output ?? 500,
         $tokens_reasoning: s.tokens_reasoning ?? 100,
         $tokens_cache_read: 50,
         $tokens_cache_write: 20,
+        $agent: s.agent ?? "build",
+        $model: s.model ?? MODEL_A,
         $time_created: created,
         $time_updated: updated,
-        $time_archived: s.time_archived ?? null,
         $time_compacting: null,
+        $time_archived: s.time_archived ?? null,
       })
     }
 
@@ -215,96 +231,81 @@ export function buildFixtureDb(dbPath: string): void {
     // Pre-migration zero-cost session.
     addSession({ id: FIXTURES.sessions.pre_migration, title: "Pre migration zero cost session", cost: 0, tokens_input: 0, tokens_output: 0, tokens_reasoning: 0, idx: 16 })
 
-    // --- messages + parts -------------------------------------------------
-    const insMessage = db.query(`INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)`)
-    const insPart = db.query(`INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?)`)
-    const addMessage = (id: string, sessionId: string, ts: number, role: "user" | "assistant" | "system") =>
-      insMessage.run(id, sessionId, ts, ts, msgData(role))
-    const addPart = (id: string, messageId: string, sessionId: string, ts: number, data: unknown) =>
-      insPart.run(id, messageId, sessionId, ts, ts, JSON.stringify(data))
+    // --- session_message rows ----------------------------------------------
+    // One row per logical message; assistant rows carry their parts inline as
+    // a `content[]` array — this is the actual OpenCode V2 shape. The plugin's
+    // own parts.ts unpacks these into message/part-shaped objects at read
+    // time; FIXTURES.parts.* above already matches the ids it will produce.
+    let seq = 0
+    const insMsg = db.query(`INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    const addUserMessage = (id: string, sessionId: string, ts: number, text: string, files: unknown[] = []) =>
+      insMsg.run(id, sessionId, "user", ++seq, ts, ts, JSON.stringify({ ...MSG_META, role: "user", time: { created: ts }, text, files, agents: [] }))
+    const addAssistantMessage = (id: string, sessionId: string, ts: number, content: unknown[]) =>
+      insMsg.run(id, sessionId, "assistant", ++seq, ts, ts, JSON.stringify({ ...MSG_META, role: "assistant", time: { created: ts }, content }))
+
+    const textItem = (text: string, ts: number) => ({ type: "text", text, time: { created: ts, completed: ts } })
+    const reasoningItem = (text: string, ts: number) => ({ type: "reasoning", text, time: { created: ts, completed: ts } })
+    const patchItem = (hash: string, files: string[], ts: number) => ({ type: "patch", hash, files, time: { created: ts, completed: ts } })
+    const toolItem = (opts: { name: string; callID: string; status: string; input: unknown; output?: string; error?: string; metadata?: unknown; tsStart: number; tsEnd?: number }) => ({
+      type: "tool",
+      id: opts.callID,
+      name: opts.name,
+      executed: false,
+      state: {
+        status: opts.status,
+        input: opts.input,
+        output: opts.output,
+        error: opts.error ? { type: "unknown", message: opts.error } : undefined,
+        metadata: opts.metadata ?? {},
+      },
+      time: { created: opts.tsStart, ran: opts.tsStart, completed: opts.tsEnd ?? opts.tsStart },
+    })
 
     // Active session content.
-    addMessage(FIXTURES.messages.active_first_user, FIXTURES.sessions.active, T + 10, "user")
-    addPart(FIXTURES.parts.text_active, FIXTURES.messages.active_first_user, FIXTURES.sessions.active, T + 11, {
-      type: "text",
-      text: "Submit PR review for the session explorer. Please double-check the regex handling.",
-    })
-    addMessage("msg_fix_active_a1", FIXTURES.sessions.active, T + 20, "assistant")
-    addPart(FIXTURES.parts.tool_completed, "msg_fix_active_a1", FIXTURES.sessions.active, T + 21, {
-      type: "tool",
-      tool: "bash",
-      callID: "call_fix_done",
-      state: { status: "completed", input: { command: "ls -la" }, output: "ok done", time: { start: T + 21, end: T + 24 } },
-    })
-    addPart(FIXTURES.parts.tool_error, "msg_fix_active_a1", FIXTURES.sessions.active, T + 22, {
-      type: "tool",
-      tool: "read",
-      callID: "call_fix_err",
-      state: { status: "error", input: { filePath: "/x/missing.ts" }, error: "read failed: file not found" },
-    })
-    addPart("prt_fix_active_reason01", "msg_fix_active_a1", FIXTURES.sessions.active, T + 23, {
-      type: "reasoning",
-      text: "Considering the PR review feedback before applying changes.",
-    })
+    addUserMessage(
+      MSG.active_user,
+      FIXTURES.sessions.active,
+      T + 10,
+      "Submit PR review for the session explorer. Please double-check the regex handling.",
+    )
+    addAssistantMessage(MSG.active_asst, FIXTURES.sessions.active, T + 20, [
+      toolItem({ name: "bash", callID: "call_fix_done", status: "completed", input: { command: "ls -la" }, output: "ok done", tsStart: T + 21, tsEnd: T + 24 }),
+      toolItem({ name: "read", callID: "call_fix_err", status: "error", input: { filePath: "/x/missing.ts" }, error: "read failed: file not found", tsStart: T + 22 }),
+      reasoningItem("Considering the PR review feedback before applying changes.", T + 23),
+    ])
 
     // active002 — externalized-output tool part + a second error (for failure grouping).
     const T2 = T + 2 * 3_600_000
-    addMessage("msg_fix_a002_a1", "ses_fix_active002", T2 + 20, "assistant")
     const toolOutDir = process.env.OPENCODE_SESSIONS_EXPLORER_TOOL_OUTPUT_DIR ?? "/tmp/opencode-tool-output"
-    addPart(FIXTURES.parts.tool_with_outputpath, "msg_fix_a002_a1", "ses_fix_active002", T2 + 21, {
-      type: "tool",
-      tool: "grep",
-      callID: "call_fix_op",
-      state: {
+    addAssistantMessage(MSG.a002_asst, "ses_fix_active002", T2 + 20, [
+      toolItem({
+        name: "grep",
+        callID: "call_fix_op",
         status: "completed",
         input: { pattern: "foo" },
         // Whitelisted path (inside the tool-output dir) but intentionally NOT created on
         // disk, so dereference fails gracefully (null + warning) — see rehearsal CC-03c.
         metadata: { outputPath: join(toolOutDir, "tool_fix_outpath01") },
-      },
-    })
-    addPart("prt_fix_a002_err1", "msg_fix_a002_a1", "ses_fix_active002", T2 + 22, {
-      type: "tool",
-      tool: "edit",
-      callID: "call_fix_err2",
-      state: { status: "error", input: { filePath: "/x/edit.ts" }, error: "edit failed: pattern not found" },
-    })
+        tsStart: T2 + 21,
+      }),
+      toolItem({ name: "edit", callID: "call_fix_err2", status: "error", input: { filePath: "/x/edit.ts" }, error: "edit failed: pattern not found", tsStart: T2 + 22 }),
+    ])
 
     // Big-part session content.
     const TB = T + 15 * 3_600_000
-    addMessage("msg_fix_bigpart_u1", FIXTURES.sessions.big_part, TB + 10, "user")
-    addPart("prt_fix_bigpart_text1", "msg_fix_bigpart_u1", FIXTURES.sessions.big_part, TB + 11, {
-      type: "text",
-      text: "work on the big patch please",
-    })
-    addMessage(FIXTURES.messages.big_message_150mb, FIXTURES.sessions.big_part, TB + 20, "assistant")
-    addPart("prt_fix_bigmsg_p1", FIXTURES.messages.big_message_150mb, FIXTURES.sessions.big_part, TB + 21, {
-      type: "patch",
-      hash: "hbig1",
-      files: ["src/a.ts", "src/b.ts"],
-    })
-    addPart("prt_fix_bigmsg_p2", FIXTURES.messages.big_message_150mb, FIXTURES.sessions.big_part, TB + 22, {
-      type: "text",
-      text: "applied the patch",
-    })
-    // ~220 small patch parts to push part_count > 200.
-    addMessage("msg_fix_bigpart_patch", FIXTURES.sessions.big_part, TB + 30, "assistant")
-    for (let i = 0; i < 220; i++) {
-      const pid = `prt_fix_bp_${String(i).padStart(3, "0")}`
-      addPart(pid, "msg_fix_bigpart_patch", FIXTURES.sessions.big_part, TB + 40 + i, {
-        type: "patch",
-        hash: `h${i}`,
-        files: [`src/gen/file_${i}.ts`],
-      })
-    }
-    // Oversized-by-count patch part: >200 files triggers get-part files truncation,
-    // and the raw JSON is several KB (retargeted byte assertion in rehearsal).
+    addUserMessage(MSG.bigpart_user, FIXTURES.sessions.big_part, TB + 10, "work on the big patch please")
+    addAssistantMessage(MSG.bigmsg_asst, FIXTURES.sessions.big_part, TB + 20, [
+      patchItem("hbig1", ["src/a.ts", "src/b.ts"], TB + 21),
+      textItem("applied the patch", TB + 22),
+    ])
+    // ~220 small patch parts + 1 oversized-by-count patch (>200 files triggers
+    // get-part files truncation, and the raw JSON is several KB).
+    const smallPatches = Array.from({ length: 220 }, (_, i) => patchItem(`h${i}`, [`src/gen/file_${i}.ts`], TB + 40 + i))
     const bigFiles = Array.from({ length: 260 }, (_, i) => `src/module/generated/file_${String(i).padStart(4, "0")}.ts`)
-    addPart(FIXTURES.parts.big_5mb_patch, "msg_fix_bigpart_patch", FIXTURES.sessions.big_part, TB + 1000, {
-      type: "patch",
-      hash: "hbigpatch",
-      files: bigFiles,
-    })
+    addAssistantMessage(MSG.bigpart_patch_asst, FIXTURES.sessions.big_part, TB + 30, [
+      ...smallPatches,
+      patchItem("hbigpatch", bigFiles, TB + 1000),
+    ])
 
     db.exec("PRAGMA wal_checkpoint(TRUNCATE);")
   } finally {

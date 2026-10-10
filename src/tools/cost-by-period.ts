@@ -58,7 +58,7 @@ export const costByPeriod = tool({
                SUM(tokens_input) AS tokens_input,
                SUM(tokens_output) AS tokens_output,
                SUM(tokens_reasoning) AS tokens_reasoning
-          FROM session
+          FROM session_v2
           ${whereSql}
        GROUP BY period
        ${having.length ? "HAVING " + having.join(" AND ") : ""}

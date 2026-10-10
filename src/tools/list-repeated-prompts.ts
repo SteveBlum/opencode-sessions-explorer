@@ -30,33 +30,26 @@ export const listRepeatedPrompts = tool({
   },
   async execute(args) {
     return runWithEnvelope("list_repeated_prompts", 48, async () => {
-      const where: string[] = ["json_extract(m.data,'$.role') = 'user'"]
+      const where: string[] = ["sm.type = 'user'"]
       const params: any[] = []
       if (args.since_ms !== undefined) { where.push("s.time_created >= ?"); params.push(args.since_ms) }
       if (args.until_ms !== undefined) { where.push("s.time_created <= ?"); params.push(args.until_ms) }
       if (args.archived === "no") where.push("s.time_archived IS NULL")
       else if (args.archived === "only") where.push("s.time_archived IS NOT NULL")
 
-      // Get first user message per session
+      // Get first user message per session — text lives directly on the session_message row.
       const rows = stmt(`
         WITH first_user AS (
-          SELECT m.session_id, MIN(m.time_created) AS first_ts, MIN(m.id) AS first_msg
-            FROM message m
-            JOIN session s ON s.id = m.session_id
+          SELECT sm.session_id, MIN(sm.time_created) AS first_ts, MIN(sm.id) AS first_msg
+            FROM session_message sm
+            JOIN session_v2 s ON s.id = sm.session_id
            WHERE ${where.join(" AND ")}
-        GROUP BY m.session_id
+        GROUP BY sm.session_id
         )
         SELECT fu.session_id, fu.first_ts, s.title, s.cost,
-               (SELECT GROUP_CONCAT(COALESCE(json_extract(p.data,'$.text'), ''), ' ')
-                  FROM part p
-                 WHERE p.message_id = (SELECT id FROM message
-                                        WHERE session_id = fu.session_id
-                                          AND json_extract(data,'$.role') = 'user'
-                                        ORDER BY time_created, id
-                                        LIMIT 1)
-                   AND json_extract(p.data,'$.type') = 'text') AS prompt_text
+               (SELECT json_extract(sm2.data,'$.text') FROM session_message sm2 WHERE sm2.id = fu.first_msg) AS prompt_text
           FROM first_user fu
-          JOIN session s ON s.id = fu.session_id
+          JOIN session_v2 s ON s.id = fu.session_id
       `).all(...params) as { session_id: string; first_ts: number; title: string; cost: number; prompt_text: string | null }[]
 
       // Normalize + cluster in TS
